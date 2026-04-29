@@ -1,0 +1,22 @@
+# Core Frameworks
+ag2                      # The updated version of AutoGen (replaces pyautogen)
+langchain
+langchain-openai
+langchain-community
+langchain-experimental
+langchain-classic
+
+
+# Database Drivers (Ubuntu-friendly)
+psycopg2-binary          # Ensures installation works without needing libpq-dev
+sqlalchemy               # Required by LangChain's SQLDatabase utility
+
+# UI and Utilities
+gradio
+streamlit
+python-dotenv
+pydantic
+requests                 # For calling FastAPI backend
+
+# Specific versioning if needed for agentchat
+autogen-agentchat~=0.2
