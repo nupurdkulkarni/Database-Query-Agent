@@ -3,6 +3,7 @@ import logging
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 # Ensure the parent directory is in sys.path to import from frontend
 _current_file = Path(__file__).resolve()
@@ -33,7 +34,8 @@ app.add_middleware(
 )
 
 
-def load_sessions():
+def load_sessions() -> List[Dict[str, Any]]:
+    """Loads all chat sessions from the local JSON store."""
     if SESSIONS_FILE.exists():
         try:
             with SESSIONS_FILE.open() as f:
@@ -44,7 +46,7 @@ def load_sessions():
     return []
 
 
-def save_session(thread_id: str, title: str, history: list = None):
+def save_session(thread_id: str, title: str, history: Optional[List[Dict[str, Any]]] = None) -> None:
     sessions = load_sessions()
     existing = next((s for s in sessions if s["thread_id"] == thread_id), None)
     if not existing:
@@ -71,12 +73,12 @@ class ChatRequest(BaseModel):
 
 
 @app.get("/api/sessions")
-def get_sessions():
+def get_sessions() -> List[Dict[str, Any]]:
     return load_sessions()
 
 
 @app.get("/api/sessions/{thread_id}/history")
-def get_history(thread_id: str):
+def get_history(thread_id: str) -> List[Dict[str, Any]]:
     sessions = load_sessions()
     session = next((s for s in sessions if s["thread_id"] == thread_id), None)
     if session and session.get("history"):
@@ -87,7 +89,7 @@ def get_history(thread_id: str):
 
 
 @app.delete("/api/sessions/{thread_id}")
-def delete_session(thread_id: str):
+def delete_session(thread_id: str) -> Dict[str, str]:
     sessions = load_sessions()
     sessions = [s for s in sessions if s["thread_id"] != thread_id]
     with SESSIONS_FILE.open("w") as f:

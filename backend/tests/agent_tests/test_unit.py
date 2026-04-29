@@ -18,7 +18,7 @@ class TestSQLGuard:
             "WITH cte AS (SELECT id FROM project) SELECT * FROM cte",
         ],
     )
-    def test_safe_queries_pass(self, sql):
+    def test_safe_queries_pass(self, sql: str) -> None:
         assert _is_safe_select_sql(sql) is True
 
     @pytest.mark.parametrize(
@@ -29,22 +29,22 @@ class TestSQLGuard:
             "UPDATE project SET name = 'hacked'",
         ],
     )
-    def test_dangerous_queries_blocked(self, sql):
+    def test_dangerous_queries_blocked(self, sql: str) -> None:
         assert _is_safe_select_sql(sql) is False
 
 
 class TestSQLValidator:
-    def test_valid_select(self):
+    def test_valid_select(self) -> None:
         result = _validate_sql("SELECT id, name FROM project")
         assert result["valid"] is True
 
-    def test_invalid_syntax(self):
+    def test_invalid_syntax(self) -> None:
         result = _validate_sql("SELEC name FORM project")
         assert result["valid"] is False
 
 
 class TestSQLExecutor:
-    def test_valid_query_returns_results(self):
+    def test_valid_query_returns_results(self) -> None:
         result = _execute_sql("SELECT id, name FROM project LIMIT 3")
         assert result["status"] == "ok"
         assert result["row_count"] > 0

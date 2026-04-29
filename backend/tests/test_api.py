@@ -11,7 +11,7 @@ class TestAPIEndpoints:
     API_BASE = "http://127.0.0.1:8000"
 
     @pytest.fixture(autouse=True)
-    def _check_server_running(self):
+    def _check_server_running(self) -> None:
         try:
             resp = requests.get(f"{self.API_BASE}/api/sessions", timeout=2)
             if resp.status_code != HTTP_OK:
@@ -19,12 +19,12 @@ class TestAPIEndpoints:
         except Exception:
             pytest.skip("Backend server not running")
 
-    def test_sessions_endpoint(self):
+    def test_sessions_endpoint(self) -> None:
         resp = requests.get(f"{self.API_BASE}/api/sessions", timeout=TIMEOUT_S)
         assert resp.status_code == HTTP_OK
         assert isinstance(resp.json(), list)
 
-    def test_chat_endpoint_streams(self):
+    def test_chat_endpoint_streams(self) -> None:
         resp = requests.post(
             f"{self.API_BASE}/api/chat",
             json={"query": "How many projects?", "thread_id": "api_test"},
@@ -33,7 +33,7 @@ class TestAPIEndpoints:
         )
         assert resp.status_code == HTTP_OK
         # Check for SSE stream
-        events = []
+        events: list = []
         for line in resp.iter_lines(decode_unicode=True):
             if line and line.startswith("data: "):
                 events.append(line)
