@@ -1,0 +1,10 @@
+.env
+.git
+.gitignore
+node_modules
+dist
+__pycache__
+.venv
+faiss_schema_index
+faiss_schema_index_streamlit
+sessions.json
