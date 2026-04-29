@@ -149,7 +149,17 @@ export default function App() {
                 assistantMessage += data.content;
                 setMessages(prev => {
                   const newMsgs = [...prev];
-                  newMsgs[newMsgs.length - 1] = { ...newMsgs[newMsgs.length - 1], content: assistantMessage };
+                  newMsgs[newMsgs.length - 1] = { 
+                    ...newMsgs[newMsgs.length - 1], 
+                    content: assistantMessage,
+                    status: undefined // Clear status when tokens start
+                  };
+                  return newMsgs;
+                });
+              } else if (data.type === 'info') {
+                setMessages(prev => {
+                  const newMsgs = [...prev];
+                  newMsgs[newMsgs.length - 1] = { ...newMsgs[newMsgs.length - 1], status: data.content };
                   return newMsgs;
                 });
               } else if (data.type === 'final') {
@@ -307,7 +317,15 @@ export default function App() {
                   <div className={`prose prose-sm max-w-none ${msg.role === 'user' ? 'text-gray-800' : 'text-gray-700'}`}>
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
                     {msg.role === 'assistant' && isLoading && idx === messages.length - 1 && (
-                      <span className="inline-block w-2 h-4 bg-gray-400 animate-pulse ml-1 align-middle"></span>
+                      <div className="mt-2 space-y-2">
+                        {msg.status && (
+                          <div className="flex items-center gap-2 text-xs text-blue-500 font-medium animate-in fade-in slide-in-from-bottom-1 duration-300">
+                            <Loader2 size={12} className="animate-spin" />
+                            {msg.status}
+                          </div>
+                        )}
+                        <span className="inline-block w-2 h-4 bg-gray-400 animate-pulse ml-1 align-middle"></span>
+                      </div>
                     )}
                   </div>
 

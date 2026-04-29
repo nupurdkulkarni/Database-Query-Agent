@@ -260,7 +260,7 @@ def _get_summary_llm() -> ChatOpenAI:
     base_url = "https://openrouter.ai/api/v1" if api_key and api_key.startswith("sk-or-v1") else None
 
     return ChatOpenAI(
-        model=os.getenv("SUMMARY_MODEL", "meta-llama/llama-3.1-8b-instruct"),
+        model=os.getenv("SUMMARY_MODEL", "gpt-4o-mini"),
         api_key=api_key,
         base_url=base_url,
         temperature=float(os.getenv("SUMMARY_LLM_TEMPERATURE", "0.2")),
@@ -300,7 +300,10 @@ def _generate_sql_draft(user_query: str, schema_text: str | None = None, chat_hi
     if chat_history:
         history_str = "\nPAST CONVERSATION CONTEXT:\n"
         for h in chat_history[-3:]:  # only pass last 3 for context length
-            history_str += f"User: {h['query']}\nSQL Generated: {h['sql']}\n\n"
+            user_msg = h.get("query", "")
+            sql_gen = h.get("sql", "")
+            if user_msg or sql_gen:
+                history_str += f"User: {user_msg}\nSQL Generated: {sql_gen}\n\n"
         history_str += (
             "IMPORTANT: The user's new question may refer to the past conversation above. "
             "If it is a follow-up (e.g. 'now filter by X'), modify the past SQL query appropriately.\n"
@@ -838,6 +841,21 @@ class _GraphCache:
         return cls._compiled_graph
 
 
+def _clean_history(raw_history: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Standardizes history from raw session format to internal agent format."""
+    if not raw_history:
+        return []
+    clean_history = []
+    for h in raw_history:
+        if h.get("role") == "user":
+            clean_history.append({"query": h.get("content")})
+        elif h.get("role") == "assistant" and clean_history:
+            # Match assistant response to the last user query
+            clean_history[-1]["answer"] = h.get("content")
+            clean_history[-1]["sql"] = h.get("sql", "")
+    return clean_history
+
+
 def get_compiled_app():
     return _GraphCache.get()
 
@@ -855,13 +873,7 @@ def _ask_agent(
     # If server restarted, memory is wiped. Recover from json if available.
     state = app.get_state(config)
     if not state.values and recovered_history:
-        clean_history = []
-        for h in recovered_history:
-            if h.get("role") == "user":
-                clean_history.append({"query": h.get("content")})
-            elif h.get("role") == "assistant" and clean_history:
-                clean_history[-1]["answer"] = h.get("content")
-                clean_history[-1]["sql"] = h.get("sql", "")
+        clean_history = _clean_history(recovered_history)
         app.update_state(config, {"chat_history": clean_history})
 
     initial_state = {"user_query": user_query, "retry_count": 0}
@@ -901,21 +913,48 @@ def _ask_agent_stream(
     thread_id: str = "default",
     recovered_history: list | None = None,
 ):
-    """Stream answer with real LLM tokens using ChatOpenAI.stream()."""
-    result = _ask_agent(user_query, _team, thread_id=thread_id, recovered_history=recovered_history)
-    sql = result.get("sql", "")
-    records = result.get("records", [])
-    sources = result.get("sources", [])
-    timings = result.get("timings", {})
-    execution_result = {
-        "status": result.get("status", "ok"),
-        "error": result.get("error", ""),
-        "records": records,
-        "row_count": len(records) if records else 0,
-        "schema_info": result.get("schema_info", ""),
+    """Streams graph execution steps and then the final LLM summary."""
+    config = {"configurable": {"thread_id": thread_id}}
+    app = get_compiled_app()
+    initial_state: Dict[str, Any] = {
+        "user_query": user_query,
+        "chat_history": _clean_history(recovered_history),
+        "retry_count": 0,
     }
 
-    # Stream tokens from LLM summary using ChatOpenAI.stream()
+    final_state: Dict[str, Any] = {}
+    
+    # Map node names to human-friendly status labels
+    node_labels: Dict[str, str] = {
+        "intent_analyzer": "Analyzing your intent...",
+        "schema_retriever": "Retrieving database schema...",
+        "metadata_handler": "Answering about database structure...",
+        "general_handler": "Thinking of a chat response...",
+        "sql_query_generator": "Drafting SQL query...",
+        "sql_guardrails": "Validating SQL safety...",
+        "query_executor": "Executing query on database...",
+        "retry_manager": "SQL failed, retrying with more context...",
+    }
+
+    # Iterate through graph steps
+    for step in app.stream(initial_state, config, stream_mode="updates"):
+        node_name = list(step.keys())[0]
+        label = node_labels.get(node_name, f"Running {node_name}...")
+        
+        yield {
+            "type": "info",
+            "content": label,
+        }
+        
+        # Keep track of the last state update
+        final_state.update(step[node_name])
+
+    # Extract final results for summary
+    sql = final_state.get("candidate_sql", "")
+    execution_result = final_state.get("execution_result", {"status": "ok", "records": []})
+    records = execution_result.get("records", [])
+    
+    # Stream the final answer tokens
     answer = ""
     for token in _stream_summary_execution(user_query, execution_result):
         answer += token
@@ -924,16 +963,15 @@ def _ask_agent_stream(
             "content": token,
         }
 
-    # Yield final metadata after all tokens
+    # Final metadata
     yield {
         "type": "final",
         "answer": answer,
         "sql": sql,
         "records": records,
-        "sources": sources,
-        "timings": timings,
-        "status": result.get("status", "ok"),
-        "schema_info": result.get("schema_info", ""),
+        "sources": final_state.get("schema_sources", []),
+        "status": execution_result.get("status", "ok"),
+        "schema_info": execution_result.get("schema_info", ""),
     }
 
 
