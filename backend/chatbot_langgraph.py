@@ -6,7 +6,7 @@ import time
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any, Dict, TypedDict
 
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
@@ -384,32 +384,32 @@ def _validate_sql(sql: str) -> dict[str, Any]:
     return {"valid": len(errors) == 0, "errors": errors, "warnings": warnings}
 
 
-def _repair_sql(user_query: str, bad_sql: str, issues: list[str], schema_text: str | None = None) -> str:
-    if schema_text is None:
-        schema_text = _get_schema_metadata_text(user_query=user_query)
-
-    prompt = f"""
-You are a PostgreSQL SQL repair assistant.
+@traceable(name="SQL Repair")
+def _repair_sql(bad_sql: str, error_msg: str, user_query: str) -> str:
+    """Attempts to fix a faulty SQL query using LLM reasoning."""
+    system_prompt: str = """
+You are a PostgreSQL expert specializing in SQL repair.
 Return ONLY one corrected SQL query.
-
-User question:
-{user_query}
-
-Schema context:
-{schema_text}
-
-Previous SQL:
-{bad_sql}
-
-Validation issues to fix:
-{chr(10).join(f"- {issue}" for issue in issues)}
 
 Rules:
 - Use only SELECT or WITH.
 - Use only tables/columns from schema context.
 - Avoid SELECT *.
 - Output SQL only, no explanation.
-""".strip()  # noqa: S608
+""".strip()
+
+    prompt = f"""
+{system_prompt}
+
+User question:
+{user_query}
+
+Previous SQL:
+{bad_sql}
+
+Validation issues to fix:
+{error_msg}
+""".strip()
 
     structured_llm = _get_sql_llm().with_structured_output(SQLDraft)
     response = structured_llm.invoke(prompt)
@@ -437,7 +437,7 @@ def _guard_and_fix_sql(
             return {"status": "valid", "sql": current_sql, "report": report}
 
         all_issues = report.get("errors", []) + report.get("warnings", [])
-        current_sql = _repair_sql(user_query, current_sql, all_issues, schema_text)
+        current_sql = _repair_sql(current_sql, "\n".join(all_issues), user_query)
 
     return {"status": "failed", "sql": current_sql, "report": last_report}
 
@@ -676,15 +676,16 @@ class GraphState(TypedDict):
 # ============================================================================
 
 
-def _node_route_query(state: GraphState) -> dict:
-    t_start = time.perf_counter()
-    history_str = ""
+def _node_route_query(state: GraphState) -> Dict[str, Any]:
+    """Classifies user query into data, metadata, or general conversation."""
+    t_start: float = time.perf_counter()
+    history_str: str = ""
     if state.get("chat_history"):
         history_str = "\nCONVERSATION HISTORY:\n"
         for h in state["chat_history"][-2:]:
             history_str += f"User: {h.get('query', '')}\nAssistant: {h.get('answer', '')}\n"
 
-    prompt = f"""
+    prompt: str = f"""
 Analyze the user's query and decide the intent. When in doubt, default to 'data'.
 {history_str}
 User Query: {state["user_query"]}
@@ -702,9 +703,10 @@ INTENT CATEGORIES:
     return {"intent": res.intent if res else "data", "t_start": t_start}
 
 
-def _node_retrieve_schema(state: GraphState) -> dict:
-    t_start = time.perf_counter()
-    bundle = _get_schema_context_bundle(state["user_query"])
+def _node_retrieve_schema(state: GraphState) -> Dict[str, Any]:
+    """Retrieves and bundles schema information for context."""
+    t_start: float = time.perf_counter()
+    bundle: Dict[str, Any] = _get_schema_context_bundle(state["user_query"])
     return {
         "schema_text": bundle["text"],
         "schema_sources": bundle.get("sources", []),
@@ -713,8 +715,10 @@ def _node_retrieve_schema(state: GraphState) -> dict:
     }
 
 
-def _node_draft_sql(state: GraphState) -> dict:
-    retry_msg = ""
+def _node_draft_sql(state: GraphState) -> Dict[str, Any]:
+    """Generates an initial SQL draft based on schema and history."""
+    t_start: float = time.perf_counter()
+    retry_msg: str = ""
     if state.get("retry_count", 0) > 0 and state.get("candidate_sql"):
         exec_res = state.get("execution_result", {})
         if exec_res.get("status") == "error":
