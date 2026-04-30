@@ -140,6 +140,25 @@ def _get_schema_rows() -> list[dict[str, Any]]:
 # ============================================================================
 
 
+def _check_database_permissions(table_name: str = "project") -> list[str]:
+    """Dynamically queries the database to discover current user permissions."""
+    try:
+        from sqlalchemy import text
+        engine = _get_engine()
+        query = text(f"""
+            SELECT privilege_type 
+            FROM information_schema.table_privileges 
+            WHERE table_name = :table 
+            AND grantee = current_user
+        """)
+        with engine.connect() as conn:
+            result = conn.execute(query, {"table": table_name})
+            return [row[0] for row in result]
+    except Exception as e:
+        logger.error("Failed to discover permissions: %s", e)
+        return []
+
+
 def _build_schema_documents(schema_rows: list[dict[str, Any]]) -> list[Any]:
     if Document is None:
         return []
@@ -209,7 +228,7 @@ def _get_schema_context_bundle(user_query: str | None = None) -> dict[str, Any]:
         rows, sources = _select_schema_rows_by_faiss(user_query)
         return {"rows": rows, "text": json.dumps(rows, indent=2), "sources": sources}
 
-    # Default: Full Schema Injection
+    # Default: Full Schema
     schema_data = _get_schema_rows()
     return {
         "rows": schema_data,
@@ -284,7 +303,8 @@ class SQLDraft(BaseModel):
 class QueryIntent(BaseModel):
     intent: str = Field(
         description="The category of the user's query: 'data' (needs SQL), "
-        "'metadata' (about tables/schema), or 'general' (chat/greetings)."
+        "'metadata' (about tables/schema), 'general' (chat/greetings), "
+        "or 'modification' (user wants to delete, update, insert, or drop data)."
     )
     reasoning: str = Field(description="Why you chose this intent.")
 
@@ -579,18 +599,21 @@ def _summarize_execution_rule_based(_user_query: str, execution_result: dict[str
     return header + "\n" + "\n".join(preview_lines) + suffix
 
 
-def _build_summary_prompt(user_query: str, execution_result: dict[str, Any]) -> str:
+def _build_summary_prompt(user_query: str, execution_result: dict[str, Any], candidate_sql: str = "") -> str:
     records = execution_result.get("records", [])
     total_count = execution_result.get("row_count", 0)
     records_preview_text = _format_records_as_text(records, max_rows=10)
     return f"""
 You receive JSON output from SQL_Executor.
 Write a paragraph that answers the user's question as if explaining to a person.
-Do not mention queries or result mechanics.
-If names repeat, include IDs so they are clearly distinct.
-If more than 10 rows exist, briefly state the total then give a short example.
+
+CRITICAL:
+1. This system is READ-ONLY. You cannot modify data.
+2. If the user asked to DELETE/UPDATE but the SQL was actually a SELECT (candidate_sql below), you MUST explain that you cannot perform the deletion and are only showing the records instead. 
+3. Never lie about data being removed if the SQL was a SELECT.
 
 User question: {user_query}
+SQL Executed: {candidate_sql}
 Total records found in database: {total_count}
 
 Preview of top records:
@@ -598,9 +621,27 @@ Preview of top records:
 """.strip()  # noqa: S608
 
 
-def _stream_summary_execution(user_query: str, execution_result: dict[str, Any]):
+def _stream_summary_execution(user_query: str, execution_result: dict[str, Any], candidate_sql: str = ""):
     """Stream summary tokens from LLM using ChatOpenAI.stream() for real token-level streaming."""
     status = execution_result.get("status")
+
+    if status == "rejected":
+        # Natural Agentic Rejection: Explain why we can't do it based on the discovery
+        prompt = (
+            "The user asked to modify the database (e.g., delete, update). "
+            "You have just checked your permissions and confirmed you are READ-ONLY. "
+            "Explain this politely to the user. Do not be overly technical about SQL queries, "
+            "just state that you've verified your access levels and don't have the permissions for that action.\n\n"
+            f"User request: {user_query}"
+        )
+        try:
+            for chunk in _get_summary_llm().stream(prompt):
+                if chunk.content:
+                    yield chunk.content
+            return
+        except Exception:
+            yield "I've checked my access levels and confirmed that I don't have the permissions required to perform that action."
+            return
 
     if status == "general":
         prompt = (
@@ -642,7 +683,7 @@ def _stream_summary_execution(user_query: str, execution_result: dict[str, Any])
         return
 
     try:
-        prompt = _build_summary_prompt(user_query, execution_result)
+        prompt = _build_summary_prompt(user_query, execution_result, candidate_sql)
         for chunk in _get_summary_llm().stream(prompt):
             if chunk.content:
                 yield chunk.content
@@ -699,6 +740,9 @@ INTENT CATEGORIES:
   When in doubt, pick 'data'.
 - 'metadata': ONLY when the user explicitly asks about the database STRUCTURE,
   schema, table definitions, or "what columns exist".
+- 'modification': User asks to DELETE, UPDATE, INSERT, DROP, or otherwise CHANGE data.
+  Examples: "Delete the project", "Change the status to active", "Remove this user".
+  You MUST pick this if the user wants to modify the database.
 - 'general': Greetings, thank you, or off-topic chat.
 """
     structured_llm = _get_intent_llm().with_structured_output(QueryIntent)
@@ -777,6 +821,28 @@ def _node_handle_general(_state: GraphState) -> dict:
     }
 
 
+def _node_handle_rejection(state: GraphState) -> dict:
+    """Discovers permissions and prepares a rejection context."""
+    t_start = time.perf_counter()
+    # Dynamic Discovery: Check what we are actually allowed to do
+    perms = _check_database_permissions()
+    is_readonly = "DELETE" not in perms and "UPDATE" not in perms and "INSERT" not in perms
+    
+    evidence = "confirmed read-only" if is_readonly else "permissions restricted"
+    
+    return {
+        "execution_result": {
+            "status": "rejected",
+            "records": [],
+            "row_count": 0,
+            "error": f"Permission check {evidence}. I do not have modification rights.",
+            "discovered_permissions": perms
+        },
+        "candidate_sql": "",
+        "t_execute": time.perf_counter(),
+    }
+
+
 def _node_increment_retry(state: GraphState) -> dict:
     return {"retry_count": state.get("retry_count", 0) + 1}
 
@@ -791,6 +857,7 @@ def build_sql_graph() -> StateGraph:
     workflow.add_node("query_executor", _node_execute_sql)
     workflow.add_node("metadata_handler", _node_handle_metadata)
     workflow.add_node("general_handler", _node_handle_general)
+    workflow.add_node("rejection_handler", _node_handle_rejection)
     workflow.add_node("retry_manager", _node_increment_retry)
 
     def decide_route(state: GraphState):
@@ -799,6 +866,8 @@ def build_sql_graph() -> StateGraph:
             return "metadata_handler"
         if intent == "general":
             return "general_handler"
+        if intent == "modification":
+            return "rejection_handler"
         return "schema_retriever"
 
     def route_after_execute(state: GraphState):
@@ -815,6 +884,7 @@ def build_sql_graph() -> StateGraph:
             "schema_retriever": "schema_retriever",
             "metadata_handler": "metadata_handler",
             "general_handler": "general_handler",
+            "rejection_handler": "rejection_handler",
         },
     )
     workflow.add_edge("schema_retriever", "sql_query_generator")
@@ -956,7 +1026,7 @@ def _ask_agent_stream(
     
     # Stream the final answer tokens
     answer = ""
-    for token in _stream_summary_execution(user_query, execution_result):
+    for token in _stream_summary_execution(user_query, execution_result, sql):
         answer += token
         yield {
             "type": "token",

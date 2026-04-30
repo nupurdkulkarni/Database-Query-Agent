@@ -149,8 +149,8 @@ export default function App() {
                 assistantMessage += data.content;
                 setMessages(prev => {
                   const newMsgs = [...prev];
-                  newMsgs[newMsgs.length - 1] = { 
-                    ...newMsgs[newMsgs.length - 1], 
+                  newMsgs[newMsgs.length - 1] = {
+                    ...newMsgs[newMsgs.length - 1],
                     content: assistantMessage,
                     status: undefined // Clear status when tokens start
                   };
@@ -227,8 +227,8 @@ export default function App() {
             <div
               key={s.thread_id}
               className={`group flex items-center justify-between px-3 py-2 rounded-md text-sm cursor-pointer transition-colors ${threadId === s.thread_id
-                  ? 'bg-blue-50 text-blue-700 font-medium'
-                  : 'text-gray-600 hover:bg-gray-100'
+                ? 'bg-blue-50 text-blue-700 font-medium'
+                : 'text-gray-600 hover:bg-gray-100'
                 }`}
               onClick={() => loadSession(s.thread_id)}
             >

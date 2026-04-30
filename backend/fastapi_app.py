@@ -5,14 +5,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-# Ensure the parent directory is in sys.path to import from frontend
 _current_file = Path(__file__).resolve()
 sys.path.append(str(_current_file.parent.parent))
 
-from fastapi import FastAPI  # noqa: E402
-from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
-from fastapi.responses import StreamingResponse  # noqa: E402
-from pydantic import BaseModel  # noqa: E402
+from fastapi import FastAPI  
+from fastapi.middleware.cors import CORSMiddleware  
+from fastapi.responses import StreamingResponse  
+from pydantic import BaseModel  
 
 from backend.chatbot_langgraph import _ask_agent_stream, _get_thread_history  # noqa: E402
 
@@ -108,7 +107,7 @@ def chat_stream(request: ChatRequest):
     def event_generator():
         final_event = None
         try:
-            # Fetch existing history to hydrate LangGraph if needed
+            # Fetch existing history 
             sessions = load_sessions()
             session = next((s for s in sessions if s["thread_id"] == request.thread_id), None)
             recovered_history = session.get("history", []) if session else []
@@ -157,7 +156,4 @@ def chat_stream(request: ChatRequest):
 
 if __name__ == "__main__":
     import uvicorn
-
-    # reload=False keeps a single process so load_dotenv() runs before LangChain
-    # imports at startup, which is required for LangSmith tracing to initialize.
     uvicorn.run("fastapi_app:app", host="127.0.0.1", port=8000, reload=False)
