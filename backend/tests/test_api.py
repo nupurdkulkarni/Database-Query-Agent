@@ -1,42 +1,48 @@
 import pytest
-import requests
+from fastapi.testclient import TestClient
+from unittest.mock import patch
+from backend.fastapi_app import app
 
-HTTP_OK = 200
-TIMEOUT_S = 10
-
+client = TestClient(app)
 
 class TestAPIEndpoints:
-    """Layer 6: INTEGRATION — FastAPI endpoint health."""
-
-    API_BASE = "http://127.0.0.1:8000"
-
-    @pytest.fixture(autouse=True)
-    def _check_server_running(self) -> None:
-        try:
-            resp = requests.get(f"{self.API_BASE}/api/sessions", timeout=2)
-            if resp.status_code != HTTP_OK:
-                pytest.skip("Backend server not responding")
-        except Exception:
-            pytest.skip("Backend server not running")
+    """Layer 6: INTEGRATION — FastAPI endpoint coverage using TestClient."""
 
     def test_sessions_endpoint(self) -> None:
-        resp = requests.get(f"{self.API_BASE}/api/sessions", timeout=TIMEOUT_S)
-        assert resp.status_code == HTTP_OK
-        assert isinstance(resp.json(), list)
+        response = client.get("/api/sessions")
+        assert response.status_code == 200
+        assert isinstance(response.json(), list)
 
-    def test_chat_endpoint_streams(self) -> None:
-        resp = requests.post(
-            f"{self.API_BASE}/api/chat",
+    @patch("backend.fastapi_app._ask_agent_stream")
+    def test_chat_endpoint_streams(self, mock_stream) -> None:
+        """Test the chat endpoint with a mocked stream."""
+        def mock_gen():
+            yield {"type": "info", "content": "test status"}
+            yield {"type": "token", "content": "hello"}
+            yield {"type": "final", "answer": "hello", "sql": "SELECT 1"}
+        
+        mock_stream.return_value = mock_gen()
+
+        response = client.post(
+            "/api/chat",
             json={"query": "How many projects?", "thread_id": "api_test"},
-            stream=True,
-            timeout=60,
         )
-        assert resp.status_code == HTTP_OK
-        # Check for SSE stream
-        events: list = []
-        for line in resp.iter_lines(decode_unicode=True):
-            if line and line.startswith("data: "):
-                events.append(line)
-                if events:
-                    break
-        assert len(events) > 0
+        assert response.status_code == 200
+        
+        # In TestClient, iter_lines() returns strings, not bytes
+        found = False
+        for line in response.iter_lines():
+            if "test status" in line:
+                found = True
+                break
+        assert found
+
+    def test_history_endpoint(self) -> None:
+        response = client.get("/api/sessions/non_existent/history")
+        assert response.status_code == 200
+        assert isinstance(response.json(), list)
+
+    def test_delete_session(self) -> None:
+        response = client.delete("/api/sessions/api_test")
+        assert response.status_code == 200
+        assert response.json() == {"status": "success"}
